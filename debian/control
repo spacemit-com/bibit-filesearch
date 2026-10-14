@@ -1,0 +1,44 @@
+Source: bibit-filesearch
+Section: python
+Priority: optional
+Maintainer: liuyingjie <yingjie.liu@spacemit.com>
+Build-Depends:
+ spacemit-onnxruntime,
+ debhelper-compat (= 13),
+ g++,
+ python3.14,
+Standards-Version: 4.6.2
+Homepage: https://github.com/spacemit-com/bibit-filesearch
+Rules-Requires-Root: no
+Vcs-Git: https://github.com/spacemit-com/bibit-filesearch.git
+Vcs-Browser: https://github.com/spacemit-com/bibit-filesearch
+
+Package: bibit-filesearch
+Architecture: any
+Depends:
+ ca-certificates,
+ curl,
+ file,
+ python3.14,
+ python3.14-venv,
+ spacemit-onnxruntime,
+ systemd,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: standalone local file search service for Bianbu devices
+ Bibit filesearch indexes local documents (txt/md/docx/pdf/xlsx/pptx/code/png/jpg)
+ and provides semantic search over them: embedding + BM25 hybrid retrieval,
+ NL query parsing into deterministic filters (time range / directories /
+ file types), and a unified {code, message, data} REST API. It is installed
+ under /opt/bibit-filesearch.
+ .
+ OCR runs PP-OCR, PaddleOCR's detection/classification/recognition models,
+ through onnxruntime. Its orientation classifier reads sideways and
+ upside-down text directly, so no rotation preprocessing is needed, and
+ inference is offloaded to the SpaceMIT NPU by a small resident C++ helper
+ (SpaceMITExecutionProvider via /opt/bibit-filesearch/ocr-ep/ep_worker). That
+ helper links libspacemit_ep.so and libonnxruntime.so, both shipped by
+ spacemit-onnxruntime; without it OCR still works on CPU, only slower
+ (measured 1.7-2.9x on real images, mean 2.26x, identical text). There is no
+ second OCR engine: a failed recognition is reported as a failed file with a
+ reason instead of being silently read by a worse engine.

@@ -1,0 +1,157 @@
+# bibit-filesearch 出厂模板（deb 安装落盘 /opt/bibit-filesearch/config.yaml）
+#
+# 本文件是**人类可读的参考 + 运维对照**，不是配置复制源。
+# 权威默认值在代码里（config.py DEFAULTS ⊕ settings.py DEFAULTS）；首启不把本文件
+# 复制到 ~/.config，用户配置只保存「与默认不同的键」。改默认值请改代码，并同步本文件
+# （tests/test_config_migration.py 会校验两者一致）。
+# 用户可在界面里改，或直接编辑 ~/.config 副本（用户配置优先于默认值）。
+
+# 知识库路径（默认空 → 首次启动动态填当前用户 ~/Documents）
+index_dirs: []
+
+# 自动索引：保存并索引后 watcher 增量监听
+auto_index: true
+
+# 可索引格式（全 20 类）
+indexable_types:
+  - txt
+  - md
+  - docx
+  - pdf
+  - py
+  - js
+  - java
+  - cpp
+  - c
+  - cs
+  - go
+  - rs
+  - ts
+  - sql
+  - sh
+  - json
+  - xlsx
+  - pptx
+  - png
+  - jpg
+
+# 排除规则（推荐：隐藏/构建/缓存目录）
+exclude_patterns:
+  - .git
+  - node_modules
+  - __pycache__
+
+# 索引深度
+max_depth: 3
+
+# 检索返回条数（Top-K）——界面「检索返回条数」；只管显示几条，**不影响检索深度**
+top_k: 5
+
+# OCR。运行时不变更此文件——权威默认值在 config.py DEFAULTS，此处只作人类可读参考；
+# 要改请写进用户配置 ~/.config/bibit-filesearch/config.yaml 后重启。
+#
+# 引擎只有 PP-OCR（RapidOCR + onnxruntime），故没有 engine 这个键。
+#
+# device：推理设备。这是**设备**级选择，不是引擎选择——换的是算力不是识别器。
+#   auto —— 默认。有 NPU（/opt/bibit-filesearch/ocr-ep/ep_worker + libspacemit_ep.so）
+#           就用 SpaceMIT NPU，否则纯 CPU。
+#   npu  —— 要求用 NPU（不可用时告警，但仍退回 CPU，不阻断服务）。
+#   cpu  —— 强制纯 CPU。
+# NPU 平均快约 2.3 倍（4 张真实图各 3 次取中位数，单图 1.7×~2.9×），识别文本 CPU 与
+# NPU **逐字一致**。所以 NPU 是加速项不是依赖项：缺了就是慢数倍。
+# 走 NPU 需要那个 C++ 常驻进程，原因见 src/bibit_filesearch/ocr_ep.py 的长注释
+# （Python 的 spacemit_ort shim 建 EP 会话必然段错误）。
+#
+# max_side_len：rapidocr 的 Global.max_side_len（出厂 1400）。
+#   内存代价近平方级，逐档实测（4 图 × 8 档，三 worker VmRSS 之和）：
+#     2000 → 4916 MB             1600 → 3438 MB
+#     1400 → 2983 MB（出厂）     1200 → 2648 MB（触底，再往下不再省）
+#   选 1400 而非 1200：1200 起多丢一个字符，1400 与 1600 识别质量相同（只丢 1 字）。
+#   <=0 = 不覆盖。★ 改它必须配 PARSER_REVISION +1：存量图片文本会变。
+# worker_max_runs：单个 ep_worker 的 RUN 次数上限（0 = 不按次数退休）。见
+#   ocr_ep.WORKER_MAX_RUNS。
+# idle_release_secs：空闲多久放掉全部 OCR worker（秒，0 = 关，出厂 10）。
+#   运行期**唯一**的释放触发点——「池空即释放」不可用，因为池空不代表不会再用了，
+#   会让零星到达的相邻图每张都重建 worker。内存真贵时的及时归还由 worker_max_rss_mb 兜。
+#   定价：释放后第一张 OCR 多付约 1.5s（冷态 3.56s vs 热态 2.06s），所以别设太小。
+#   见 ocr_ep.WORKER_IDLE_RELEASE_SECS。
+# pdf_max_ocr_pages：单个 PDF 最多对多少页做 OCR（0 = 不限，出厂 20）。
+#   配合「PDF 逐页判据」：某页文本 < 40 字就对该页提图 OCR，故整本扫描书会逐页 OCR
+#   （单页 5.2~7.5s，不设闸就是几十分钟的 NPU 占用）。
+#   正常书碰不到它（预算早停通常在 10~40 页内就攒够 64 块）；它只拦病态输入
+#   （前面大量无文字图页，OCR 也读不出东西，于是要一直往后翻）。
+#   见 parser.PDF_MAX_OCR_PAGES 的标定说明。
+# worker_max_rss_mb：单个 ep_worker 的常驻内存上限（MB，0 = 不限）。
+#   超了即退休，下次 OCR 时重建（代价约 0.3s/模型）。大图的 det worker 会随输入面积涨
+#   到 GB 级且不归还（rec 自然水位 ~1050 MB、cls ~99 MB），所以设 1500 只挑大图的 det，
+#   小图批不受影响。见 ocr_ep.WORKER_MAX_RSS_MB。
+
+# 检索参数（调试旋钮，界面不提供）
+search:
+  # 检索深度：最多取相似度最高的多少个块参与文件级聚合（BM25 路同值按文件数）。
+  # 0 或负数 = 不截断。默认 1000（推导见 src/bibit_filesearch/config.py 的注释）。
+  # **与 top_k 无关**：若两者接到同一个值上，把 Top-K 从 10 调到 5 会让块级窗口缩到
+  # 前 5 块，某文件排第 8 的最佳块被切掉、排名掉出视野（表现为「改显示条数 → 排序变了」）。
+  # 调试改法：写进 **用户配置** ~/.config/bibit-filesearch/config.yaml 的同名键后重启服务
+  # （本文件是 deb 出厂模板，**运行时不读取**，只作人类可读参考——改了不生效）。
+  # 界面保存设置不会抹掉用户配置里的本键（它只写自己那几个键，其余原样保留）。
+  candidate_pool: 1000
+  # embed_weight / filename_weight / bm25_weight：三路融合的真实比例（和 = 1）。
+  #   写真实比例而不是「除之前的原始权重」：否则配置里的数会让人误以为 cos 占七成。
+  #   语义 ≈54% / 词法 ≈46%（词法含文件名通道与 BM25 通道，各 0.230769）。
+  embed_weight: 0.538462
+  filename_weight: 0.230769
+  bm25_weight: 0.230769
+  # bm25_half_score：BM25 原始分 → 0~1 的映射常数 K（S = raw/(raw+K)）。
+  #   用**绝对映射**而非批内 min-max 归一化 —— min-max 把「本次命中集」的最小/最大分
+  #   映成 0/1，命中集小且分数接近时会把「都命中」拉成「一个满分一个零分」（两个原始分
+  #   仅差 0.0013 的文件可被拉成 1.0 / 0.0 → 排名首尾）。绝对映射下两者并列 ≈0.5。
+  #   K = 2.8，由**判据法**标定：让可人工验证查询的最差相对裕度最大化。
+  #   ★ 改 chunk.size / max_chunks_per_file 或换语料后要重标
+  #   （见 docs/bm25-score-calibration.md）。
+  #   0 = 退化为「命中即 1」的指示函数（仅排查用）。
+  bm25_half_score: 2.8
+
+# 服务
+server:
+  host: 127.0.0.1
+  # 前端来源白名单（GUI/tauri + 本地调试）。出厂默认必须带全——
+  # 缺白名单会让 GUI 跨域判成服务不可用。此列表为 deb 默认，
+  # 用户可在 ~/.config 副本中增删。
+  cors_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+    - tauri://localhost
+    - http://tauri.localhost
+    - http://localhost
+
+# 模型（默认经 :18790 取向量。模型为 Qwen3-Embedding，1024 维；
+# 由该端点注册/加载并分配底层端口。改模型须同步清索引重索引）
+#
+# query_instruction 留空。原因：底层 embed 服务以 `--pooling mean` 启动，而
+# Qwen3-Embedding 的官方指令模板是配 last-token pooling 设计的。mean pooling 下
+# 前缀 token 数远多于 query 本身，向量被指令文本主导——cos(带前缀 query, 纯指令)=0.93、
+# cos(裸 query, 带前缀 query)=0.43，短查询的命中块余弦从 0.98 掉到 0.35、跌出
+# top_candidates 后 embed 分为 0。此外索引侧走 embed_batch 从不加前缀，查询侧加前缀
+# 本身就不对称。改用 last-token pooling 后可再评估开启。
+models:
+  embed:
+    # 经统一 embed 端点调用（默认 :18790）：端点负责加载/卸载模型、分配模型端口，
+    # filesearch 只管请求。
+    url: http://127.0.0.1:18790
+    dim: 1024
+    model: qwen3-embedding-0.6b-q4_0
+    query_instruction: ""
+    # embed 推理接口；显式传 model + encoding_format
+    path: /v1/embed/embeddings
+    encoding_format: float
+    # 模型未加载时推理返 503 → 先调 load 再重试；加载本身可能耗时百来秒
+    load_path: /v1/embed/models/load
+    load_timeout: 150
+    # 一次请求的超时（秒）。它是「一批（batch_size 条）输入算完的预算」——该接口
+    # 非流式，算完整批才返回。实测单批 32 块：markdown 45.8s、压缩 JS 124~150s，
+    # 故没有一个常数能覆盖所有内容；超时后客户端会把该批队列二分（32→16→8→4）再试，
+    # 所以本值只需覆盖「一个能过的批」。connect_timeout 与它分开：本机回环，
+    # 连不上应秒级失败。
+    timeout: 60
+    connect_timeout: 5

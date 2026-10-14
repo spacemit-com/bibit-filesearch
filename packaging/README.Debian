@@ -1,0 +1,125 @@
+# bibit-filesearch 部署说明（Debian）
+
+## 概述
+
+独立文件检索服务（per-user）：watcher/indexer/scanner/retriever/nl_parser/settings。
+通过 HTTP 契约对外提供服务，不依赖特定调用方。
+
+## 安装
+
+```
+apt install ./bibit-filesearch_*.deb
+```
+
+安装内容：
+- `/usr/bin/bibit-filesearch`（CLI 入口，`serve` 子命令）
+- `/usr/lib/systemd/user/bibit-filesearch.service`（user systemd 单元）
+- `/opt/bibit-filesearch/{src,config.yaml,.venv,ocr-ep/ep_worker}`（源码 / 出厂默认配置 / venv / NPU 辅助进程）
+
+依赖：**外部 embed 端点**（默认 `:18790`）——向量化经它走 `POST /v1/embed/embeddings`，可用 `models.embed.*` 指向自建服务。
+
+装机前提：`postinst` 会建 venv 并安装 `requirements.txt`——其中 `onnxruntime` /
+`opencv-python-headless` 在 riscv64 上 PyPI 官方无 linux_riscv64 轮子，只有 SpaceMiT 私有源
+（`git.spacemit.com`）有 cp314 轮子，装机环境必须能访问它。该地址是**可覆盖的默认值**：
+设置环境变量 `PIP_INDEX` 即可换成任意可用索引。
+
+## 使用（per-user）
+
+任意登录用户 X：
+
+1. deb 安装时已在 `/usr/lib/systemd/user/default.target.wants/` 放好**全局** enable 链接，
+   任何登录用户的 user manager 都会**自动拉起**本实例，**无需**再逐用户 `enable`：
+   ```
+   systemctl --user status  bibit-filesearch
+   systemctl --user restart bibit-filesearch
+   ```
+   **系统账号不在范围内**（单元带 `ConditionUser=!@system`：系统账号没有可写的 home 与
+   桌面目录，拉起即崩）。
+
+2. 端口按 uid 派生（独立段 18700，避开其他服务的端口段）：
+   - uid < 1000 → 18700
+   - uid >= 1000 → 18700 + (uid - 1000)
+
+3. 配置：
+   - 出厂默认：`/opt/bibit-filesearch/config.yaml`（**只作人类可读参考，运行时不读取**）
+   - 用户生效：`~/.config/bibit-filesearch/config.yaml`（**首启不创建**；只在界面保存设置时
+     写入，且**只写与出厂默认不同的键** + `config_version`）
+   - 权威默认值在**代码**里（`config.DEFAULTS` ⊕ `settings._factory_defaults`），
+     `load_config` 按 `BIBIT_CONFIG` env > `~/.config` > 代码默认 分层合并
+   - 默认索引：`~/Documents`（目录存在才给，动态）
+   - 默认：auto_index=true、全 20 类型（含 png/jpg，走 OCR）、
+     exclude=[.git,node_modules,__pycache__]、max_depth=3、top_k=5
+   - 首启不复制模板：用户文件只存「与出厂默认不同」的键，故改出厂默认能触达所有
+     没设过该键的用户（详见 [`docs/configuration.md`](../docs/configuration.md)）。
+
+4. 数据：`~/.local/share/bibit-filesearch/filesearch.db`（SQLite 索引）
+
+## 配置
+
+### 两种方式（等效）
+
+1. **桌面 GUI 的「文件检索」插件页**：配置表单 → 保存并索引
+   → HTTP PUT /api/settings → 服务写回 config.yaml → 热生效
+2. **直接编辑文件**（独立测试）：编辑 `~/.config/bibit-filesearch/config.yaml`
+   → 重启服务生效（`systemctl --user restart bibit-filesearch`）
+
+### 配置 key
+
+| key | 说明 | 默认 |
+|---|---|---|
+| index_dirs | 知识库路径列表 | []（动态 ~/Documents） |
+| auto_index | 自动索引（watcher 增量） | true |
+| indexable_types | 可索引格式 | 全 20 类（含 png / jpg，走 OCR）|
+| exclude_patterns | 排除规则 | [.git, node_modules, __pycache__] |
+| max_depth | 索引深度 | 3 |
+| top_k | 检索返回条数 | 5 |
+| server.host | 监听地址 | 127.0.0.1 |
+| models.embed | embed 端点 | http://127.0.0.1:18790（`model=qwen3-embedding-0.6b-q4_0`）|
+
+## API
+
+```
+GET  /health                   健康检查
+GET  /health/deep              深度健康（db / embed / 索引计数）
+GET  /api/meta                 实例归属：uid / userName / homeDir / 派生端口 / OCR 状态
+POST /api/search               检索
+GET  /api/files/{fileId}       单文件详情（元数据 + 分块统计）
+POST /api/scan                 启动扫描（幂等）
+GET  /api/scan/progress        扫描进度
+POST /api/scan/pause|resume    暂停/继续
+GET  /api/settings             读配置
+PUT  /api/settings             写配置（写回 yaml + 热生效 + reconcile 回收）
+POST /api/settings/reset       恢复默认
+```
+
+响应契约：`{code, message, data}`；code=0 成功。
+search results 不含 `summary` 字段。
+
+## 生命周期
+
+```
+deb 安装 → 服务装上（配置出厂默认，不扫描）
+用户登录 → user systemd 拉起实例
+桌面 GUI 插件页配置 → 保存并索引 → 首次全盘扫描 + watcher 增量
+后续配置变更 → 与旧配置对比 → 增量更新（hash 幂等复用旧数据）
+```
+
+## 测试
+
+```
+PYTHONPATH=src python -m pytest tests/ -q   # 789 passed, 2 xfailed（bm25/检索/NL解析/解析/索引/扫描/watcher/配置）
+```
+
+## 与调用方的对接
+
+```
+界面：桌面 GUI「文件检索」插件页 → HTTP → :18700
+HTTP：任何调用方（应用 / 脚本 / curl）→ POST :18700/api/search
+```
+
+## 开发
+
+```
+pip install -e .[dev]   # 或 PYTHONPATH=src 直接跑
+PYTHONPATH=src python -m bibit_filesearch.main serve --port 18700
+```

@@ -1,0 +1,62 @@
+#!/usr/bin/make -f
+
+export PYTHONDONTWRITEBYTECODE = 1
+
+PACKAGE := bibit-filesearch
+INSTALL_ROOT := debian/$(PACKAGE)/opt/bibit-filesearch
+PACKAGE_ROOT := debian/$(PACKAGE)
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	rm -rf debian/.bibit-filesearch-build
+	dh_auto_clean
+
+override_dh_auto_build:
+	# OCR 的 NPU 推理辅助进程。C++ 侧是唯一可用的 SpaceMIT EP 入口：
+	# Python 的 spacemit_ort shim 建 EP 会话必然段错误（ABI 不匹配，实测 5 种写法
+	# 全部 SIGSEGV），厂商支持的是 C API OrtSessionOptionsSpaceMITEnvInit()。
+	# ★ -lspacemit_ep 必须显式链接：该符号只在 libspacemit_ep.so 里，不在
+	#   libonnxruntime.so；漏了会 undefined reference。两者都由 spacemit-onnxruntime 提供。
+	g++ -O2 -std=c++17 packaging/ocr-ep/ep_worker.cpp \
+	    -I/usr/include -L/usr/lib \
+	    -lonnxruntime -lspacemit_ep -Wl,-rpath,/usr/lib \
+	    -o packaging/ocr-ep/ep_worker
+
+override_dh_auto_install:
+	install -d $(INSTALL_ROOT)
+	cp -a src $(INSTALL_ROOT)/src
+	cp -a pyproject.toml $(INSTALL_ROOT)/pyproject.toml
+	cp -a requirements.txt $(INSTALL_ROOT)/requirements.txt
+	# 出厂默认放 /opt/bibit-filesearch/config.yaml（程序目录内聚，不引入 /etc），
+	# 即 settings._DEFAULT_CONFIG_PATHS 第一候选。
+	# 出厂模板唯一位置在 /opt；用户配置在 ~/.config（唯一权威），
+	# 升级覆盖 /opt 模板不影响用户配置。
+	cp -a packaging/config.yaml $(INSTALL_ROOT)/config.yaml
+	# OCR NPU worker（build 阶段编好）——放到程序目录内的 ocr-ep/，
+	# src/bibit_filesearch/ocr_ep.py 的 WORKER_CANDIDATES 第一候选就是它。
+	install -d $(INSTALL_ROOT)/ocr-ep
+	install -m 0755 packaging/ocr-ep/ep_worker $(INSTALL_ROOT)/ocr-ep/ep_worker
+	find $(INSTALL_ROOT)/src -type d -name __pycache__ -prune -exec rm -rf {} +
+	install -d $(PACKAGE_ROOT)/usr/lib/systemd/user
+	install -m 0644 packaging/bibit-filesearch.service $(PACKAGE_ROOT)/usr/lib/systemd/user/bibit-filesearch.service
+	# 多用户每用户一套——全局 default.target.wants symlink（deb 文件安装，
+	# 非 postinst enable）：任何登录用户的 user manager 自动拉起本服务，端口按 uid 派生
+	# 互不冲突（逐用户 enable 会让新用户永远没服务）。系统账户由 ConditionUser=!@system 排除。
+	install -d $(PACKAGE_ROOT)/usr/lib/systemd/user/default.target.wants
+	ln -s ../bibit-filesearch.service $(PACKAGE_ROOT)/usr/lib/systemd/user/default.target.wants/bibit-filesearch.service
+
+override_dh_strip:
+override_dh_dwz:
+override_dh_shlibdeps:
+override_dh_makeshlibs:
+	# vendored riscv64 .so 不做 shlibs 扫描：本机构建机没有 riscv64 objdump
+
+override_dh_installsystemduser:
+	# 不做 dh 自动 enable：全局 default.target.wants symlink 由 override_dh_auto_install
+	# 手工安装（多用户设计，见上）；enable/restart 收敛逻辑在 postinst。
+	dh_installsystemduser --no-enable
+
+override_dh_installsystemd:
+	# not used: unit is a user service

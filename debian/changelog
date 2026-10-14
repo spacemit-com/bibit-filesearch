@@ -1,0 +1,144 @@
+bibit-filesearch (0.1.34~test1) resolute-porting; urgency=medium
+
+  [ Defaults ]
+  * Default knowledge base is now ~/Documents only. The dynamic default used to
+    also include ~/Desktop (added 2026-09-09, Desktop first); it is reverted to
+    Documents only. The default still resolves per-user via Path.home() and
+    still only lists directories that exist, so a machine without ~/Documents
+    defaults to an empty list rather than to a path that is not there. A value
+    already written in the user's config.yaml is untouched - the dynamic
+    default only applies when the key is empty or missing.
+  * Default top_k is now 5, was 10.
+
+  [ Configuration and storage ]
+  * CONFIG_VERSION 6 -> 7, with the old top_k default (10) registered in
+    _CHANGED_DEFAULTS. top_k is an ordinary key, not a dynamic default: a user
+    file holding "top_k: 10" keeps overriding the new value forever, so the
+    migration has to delete it. Values other than 10 mean the user picked them
+    and are kept. index_dirs needs no registration - the dynamic default only
+    kicks in when the key is empty.
+  * Tests: rewritten test_default_index_dirs for the single-directory default
+    (including the case of a pre-existing ~/Desktop-only config, which must not
+    be hijacked), plus two new migration cases pinning that the fossil 10 is
+    deleted and a user-chosen value is not. test_t5_search's fixture now pins
+    top_k explicitly so the contract tests stop depending on the shipped
+    default.
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Wed, 14 Oct 2026 12:00:00 +0800
+
+bibit-filesearch (0.1.24~test1) resolute-porting; urgency=medium
+
+  [ OCR engine unification ]
+  * Make PP-OCR the only OCR engine and delete tesseract entirely, along with
+    the two-stage orientation rescue it required (EXIF transpose plus OSD angle
+    detection plus falling back to a 0/180 degree score comparison) and the
+    engine fallback. PP-OCR classifies orientation itself, so that machinery
+    only ever served tesseract; keeping the fallback replaced "cannot read the
+    image" with "read by a worse engine, silently".
+  * Keep the conditional EXIF transpose. Measured before deleting anything:
+    with transposition removed the four real test images return byte-identical
+    text, and a synthetic Orientation=3 sample shows the classifier reorders
+    lines rather than applying the EXIF tag - so the tag stays the authority on
+    orientation, at 0.35s per 2298px image.
+  * Report OCR failure instead of hiding it. parse_file records an "ocr:"
+    reason and the indexer marks such a file failed rather than unsupported, so
+    a broken engine no longer looks like a file with no text. Genuinely empty
+    images still land in no_text.
+  * Record low-confidence recognitions rather than acting on them: the engine
+    counts them and /api/meta exposes the count with the engine name, device
+    and worker state, so "which engine is actually running" needs no log dig.
+
+  [ Dependencies ]
+  * Drop pytesseract and the three tesseract-ocr packages from Depends.
+    onnxruntime, opencv-python-headless and rapidocr all ship the PP-OCRv6
+    det/cls/rec models inside the wheel (32MB, no download) and are the only
+    wheels available for cp314 on riscv64.
+  * postinst now proves the engine by constructing it and running one real
+    inference instead of only importing it, which used to report "models ready"
+    even when the worker was missing.
+
+  [ Configuration and storage ]
+  * Remove ocr.engine (only one engine remains) and scan.ocr_preprocess (the
+    switch for the deleted tesseract rescue). Leftover keys are ignored.
+  * PARSER_REVISION 4 -> 5 so images already indexed are re-OCR'd once: their
+    stored text came from tesseract and content_hash cannot see OCR output
+    change.
+  * Fix a latent worker bug found by the end-to-end smoke test: the first image
+    after a batch-boundary worker release always failed, because the session
+    held a worker whose pipe was already closed. run() now rebuilds and reloads
+    the worker, and the reload path no longer re-enters a non-reentrant lock.
+
+  [ Measured, for the record ]
+  * Orientation: 900x240 CJK sample at 0/90/180/270 all recognized, confidence
+    98.0-98.8.
+  * Offline: construction succeeds with http(s)_proxy pointed at a dead port
+    (2.5s), single image 3.13s, peak RSS 425MB.
+  * CPU vs NPU on four real images (3 runs, median): bill.jpg 9.25s -> 3.16s
+    (2.93x), id_card_1.png 4.71s -> 1.99s (2.37x), id_card_2.jpg 5.49s -> 2.39s
+    (2.30x), id_rotate.png 7.55s -> 4.41s (1.71x), mean 2.26x, identical text.
+    The CPU run was measured at load average 3.4, not idle.
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Mon, 28 Sep 2026 11:05:00 +0800
+
+bibit-filesearch (0.1.11~test4) resolute-porting; urgency=medium
+
+  * Record a failure when a file cannot be read at all, not only when parsing
+    or embedding fails, and stop the watcher from keeping a second copy of the
+    bookkeeping that set the status without counting the attempt or storing the
+    hash. A file the service cannot open (for example one owned by another
+    user with mode 0600) ended up at "failed" with a zero attempt count and no
+    hash, which the scanner treats as work to do on every pass - and such a
+    file can never succeed.
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Fri, 18 Sep 2026 20:20:00 +0800
+
+bibit-filesearch (0.1.11~test3) resolute-porting; urgency=medium
+
+  * Lower the per-file chunk cap from 512 to 32. Measured on the embedding
+    service, every 600 characters of dense content costs it 55-65MB that it
+    never gives back, so 512 chunks was not a bound at all; 32 chunks is about
+    1.9GB. 32 also leaves every document in the current index range intact,
+    the largest measuring 31 chunks.
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Fri, 18 Sep 2026 19:45:00 +0800
+
+bibit-filesearch (0.1.11~test2) resolute-porting; urgency=medium
+
+  * Record indexing failures on every path that calls the indexer, not only
+    the scan worker, so an unchanged file that keeps failing is no longer
+    re-parsed and re-embedded on every scan pass.
+  * Stop the content-hash shortcut from skipping files whose indexing failed;
+    giving up on a failing file is the attempt limit's job.
+  * Split an input that the embedding server rejects as too large, and
+    average the two vectors, so a chunk whose token count exceeds the
+    server's batch size can still be indexed.
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Fri, 18 Sep 2026 15:55:00 +0800
+
+bibit-filesearch (0.1.11~test1) resolute-porting; urgency=medium
+
+  * Split embedding requests into batches, so one large file can no longer
+    send tens of thousands of inputs in a single request.
+  * Probe the embedding service with a real embedding call. The health
+    endpoint keeps answering OK while the service cannot do any work, which
+    hid the failures that mattered.
+  * Cap the number of chunks indexed per file, and stop retrying a file once
+    it has failed past the attempt limit.
+  * Record the content hash when a file fails, so an unchanged file is
+    skipped instead of being re-embedded on every scan pass.
+  * Cool down automatic rebuilds, so a service that keeps crashing does not
+    trigger a fresh full scan each time it comes back.
+  * Apply exclusion rules to the full path in the watcher and in the scanner
+    walk, so a rule naming a parent directory actually takes effect.
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Fri, 18 Sep 2026 15:28:48 +0800
+
+bibit-filesearch (0.1.0) resolute-porting; urgency=medium
+
+  * Initial Bianbu package for the standalone local file search service.
+  * Install source under /opt/bibit-filesearch, create venv and install
+    dependencies from the Spacemit PyPI mirror on postinst.
+  * Ship a per-user systemd unit; enable and start for logged-in users
+    right after install (same strategy as bibit-intent).
+
+ -- liuyingjie <yingjie.liu@spacemit.com>  Tue, 01 Sep 2026 00:00:00 +0800

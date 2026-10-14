@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: *
+Copyright: 2026 SpacemiT
+License: Apache-2.0
+ This package is distributed as a Bianbu self-developed component and is
+ released under the Apache License, Version 2.0. The full license text is in
+ the top-level LICENSE file.

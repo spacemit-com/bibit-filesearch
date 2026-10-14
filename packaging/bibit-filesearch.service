@@ -1,0 +1,36 @@
+[Unit]
+Description=Bibit Filesearch (per-user file search service)
+Documentation=file:/usr/share/doc/bibit-filesearch/README.Debian
+After=network-online.target
+Wants=network-online.target
+# 多用户每用户一套——unit 装在 /usr/lib/systemd/user/default.target.wants/（deb 全局），
+# 任何「登录用户」的 user manager 自动拉起。
+# 用户范围限定普通用户（ConditionUser=!@system，@system = uid 系统段，含 root 与
+# greeter 账户）：系统账户没有可写的数据目录（其 home 下 mkdir 会撞
+# ProtectSystem=strict → EROFS），拉起即崩；也没有 ~/Documents 可索引。
+# 各用户端口按 uid 派生（_port_for_uid：uid≥1000 → 18700+uid-1000），互不冲突。
+ConditionUser=!@system
+
+[Service]
+Type=simple
+# user systemd（systemctl --user）：以登录用户身份运行
+# 端口由 bibit-filesearch 按 uid 派生（默认 18700+ 段），读 ~/.config/bibit-filesearch/config.yaml
+# 索引 ~/Documents，数据 ~/.local/share/bibit-filesearch
+# （两者都在用户 home，需可写 → 不用 ProtectHome=read-only）
+# 用 venv 的 python -m 方式 + PYTHONPATH=src（src 布局需显式路径）
+Environment=PYTHONPATH=/opt/bibit-filesearch/src
+ExecStart=/opt/bibit-filesearch/.venv/bin/python -m bibit_filesearch.main serve
+Restart=on-failure
+RestartSec=5
+# KillMode=mixed：SIGTERM 主进程 + SIGKILL 其余，避免重启后旧进程占住端口；
+# TimeoutStopSec 防止优雅关闭挂死。
+KillMode=mixed
+TimeoutStopSec=15
+
+# 安全加固（允许写用户配置/数据目录）
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=default.target

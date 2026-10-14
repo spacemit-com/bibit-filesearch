@@ -1,0 +1,94 @@
+#!/bin/sh
+set -e
+
+VENV=/opt/bibit-filesearch/.venv
+REQUIREMENTS=/opt/bibit-filesearch/requirements.txt
+PYTHON=/usr/bin/python3.14
+# 索引默认指向 SpaceMiT 私有源（riscv64 的 onnxruntime / opencv 轮子只有它有）。
+# 外部环境可用 PIP_INDEX 环境变量覆盖成任意可用的索引。
+if [ -n "$PIP_INDEX" ]; then :; else
+  PIP_INDEX=https://git.spacemit.com/api/v4/projects/33/packages/pypi/simple
+fi
+
+case "$1" in
+  configure)
+    if [ ! -x "$VENV/bin/python" ]; then
+      "$PYTHON" -m venv "$VENV"
+    fi
+    "$VENV/bin/python" -m pip install --upgrade pip >/dev/null 2>&1 || true
+    if [ -f "$REQUIREMENTS" ]; then
+      "$VENV/bin/python" -m pip install -i "$PIP_INDEX" -r "$REQUIREMENTS"
+    fi
+
+    # ---- OCR 引擎预取 ----
+    # 默认 OCR 引擎改为 PP-OCR：rapidocr 自带 PP-OCR det/cls/rec 三个 onnx 模型
+    # （约 31MB，随 wheel 安装，**不需要联网下载**），推理走 onnxruntime。
+    # 设备上装不成时不再有第二个引擎可退；失败会由服务落成「失败文件」而不是静默无文本。
+    # 这里提前把依赖状态与模型就绪度暴露在安装日志里——装不成
+    # 要看得见，否则排查 OCR 质量问题时无法区分「引擎没换成功」与「参数调错」。
+    if [ -x "$VENV/bin/python" ]; then
+      # NPU 辅助进程：检查可执行 + 依赖库齐全（缺 libspacemit_ep.so 就只能跑 CPU）
+      W=/opt/bibit-filesearch/ocr-ep/ep_worker
+      if [ -x "$W" ]; then
+        if ldd "$W" 2>/dev/null | grep -q "not found"; then
+          echo "OCR: ep_worker 依赖库缺失，将退回 CPU 推理：" >&2
+          ldd "$W" 2>/dev/null | grep "not found" >&2 || true
+        else
+          echo "OCR: NPU 推理辅助进程就绪（$W）"
+        fi
+      else
+        echo "OCR: 未找到 ep_worker，将使用纯 CPU 推理（功能可用，约慢 1.3~2.5×）" >&2
+      fi
+      # ★ 判据必须是「**真跑一次推理**」，不能只看 import 成功——ep_worker 不存在时
+      #   import 照样成功、照样打印「模型就绪」，而实际是纯 CPU 或根本跑不动。
+      #   故构造引擎 + 对一张内置小图跑一次 run()，并把设备一并报出来；
+      #   失败只提示不阻断安装（文本类索引不受影响）。
+      if "$VENV/bin/python" -c "import rapidocr, onnxruntime" >/dev/null 2>&1; then
+        "$VENV/bin/python" -c "
+import sys
+try:
+    from rapidocr import RapidOCR
+    from PIL import Image
+    import numpy as np
+    eng = RapidOCR()
+    eng(np.array(Image.new('RGB', (320, 80), 'white')))
+    print('OCR: PP-OCR 就绪（唯一引擎，自检已真跑一次推理）')
+except Exception as e:
+    print('OCR: PP-OCR 自检失败，图片将索引为失败:', str(e)[:160], file=sys.stderr)
+" || true
+      else
+        echo "OCR: rapidocr/onnxruntime 未装成——图片将索引为失败（文本类文件不受影响）" >&2
+      fi
+    fi
+
+    # ---- 多用户 per-user 服务 ----
+    # 服务随 deb 全局 enable（/usr/lib/systemd/user/default.target.wants/ symlink，
+    # 见 debian/rules），任何登录用户的 user manager 都会自动拉起本服务
+    # （ConditionUser=!@system 排除系统账户），端口按 uid 派生互不冲突。
+    # 故这里不需要"挑一个桌面用户 enable/start"：
+    #   - 新用户：下次登录自动生效，无需记录；
+    #   - 升级/重装：对当前已登录的非系统账户 daemon-reload + restart，让新
+    #     unit/代码立即生效；同时 disable 清掉用户级 enable 链接
+    #     （~/.config/systemd/user/default.target.wants/），收敛到全局 symlink，
+    #     避免同一 unit 在用户级+系统级各被 wants 一次（虽幂等，但保持干净）。
+    for runtime_dir in /run/user/*/; do
+      [ -d "$runtime_dir" ] || continue
+      uid="${runtime_dir#/run/user/}"
+      uid="${uid%/}"
+      case "$uid" in *[!0-9]*) continue ;; esac
+      [ "$uid" -eq 0 ] 2>/dev/null && continue   # root 跳过（系统账户）
+      uname=$(getent passwd "$uid" | cut -d: -f1 || true)
+      [ -n "$uname" ] || continue
+      runuser -u "$uname" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+        systemctl --user disable bibit-filesearch.service >/dev/null 2>&1 || true
+      runuser -u "$uname" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+      runuser -u "$uname" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+        systemctl --user restart --no-block bibit-filesearch.service >/dev/null 2>&1 || true
+    done
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

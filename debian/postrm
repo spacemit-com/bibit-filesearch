@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  remove|disappear)
+    # 多用户：停所有已登录非系统账户的实例，并清用户级 enable 链接
+    # （全局 default.target.wants symlink 随 deb 文件删除；disable 清用户级配置）。
+    for runtime_dir in /run/user/*/; do
+      [ -d "$runtime_dir" ] || continue
+      uid="${runtime_dir#/run/user/}"
+      uid="${uid%/}"
+      case "$uid" in *[!0-9]*) continue ;; esac
+      [ "$uid" -eq 0 ] 2>/dev/null && continue
+      uname=$(getent passwd "$uid" | cut -d: -f1 || true)
+      [ -n "$uname" ] || continue
+      runuser -u "$uname" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+        systemctl --user disable --now bibit-filesearch.service >/dev/null 2>&1 || true
+    done
+    rm -rf /opt/bibit-filesearch/.venv
+    ;;
+  purge)
+    rm -rf /opt/bibit-filesearch/.venv
+    rm -f /var/lib/bibit-filesearch/desktop-user
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

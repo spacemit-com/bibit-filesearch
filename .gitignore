@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# 数据/配置（运行时生成）
+data/
+*.db
+*.db-wal
+*.db-shm
+config.yaml
+# 例外：debian/rules 打包需要出厂默认配置
+!packaging/config.yaml
+*.yaml.tmp
+
+# 测试/工具
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OCR NPU worker：构建产物（debian/rules 在 build 阶段编译），不入库
+packaging/ocr-ep/ep_worker
+
+# 系统
+*.log
+.DS_Store
+
+# debian build artifacts
+debian/.debhelper/
+debian/*.substvars
+debian/*.debhelper
+debian/files
+debian/debhelper-build-stamp
+debian/bibit-filesearch/

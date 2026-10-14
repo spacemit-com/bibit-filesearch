@@ -1,0 +1,42 @@
+{
+  "measured_on": "2026-09-15",
+  "service": "http://127.0.0.1:8082",
+  "model": "Qwen3-Embedding-0.6B-Q4_0",
+  "config_model": "qwen3-embedding-0.6b-q4_0",
+  "config_model_was": "qwen3-embedding-0.6b",
+  "config_model_note": "2026-09-20 订正：本组数据最初在直连推理进程（model=qwen3-embedding-0.6b）时测得；后端改走统一 embed 端点后，配置键须写该端点要求的模型 ID qwen3-embedding-0.6b-q4_0（同一份权重）。仅改配置键名以对应当前出厂配置，测量数值未改。",
+  "dim": 1024,
+  "pooling": "mean",
+  "query_instruction": "",
+  "corpus": "bianbu 用户库，124 个已向量化块（~/Desktop + ~/Documents）",
+  "metric": "每个查询对全部块的余弦最大值（等于文件级 max 池化的上界）",
+  "why": "min_similarity 的标定依据。门槛要能剔除噪声查询、又不能误杀真实查询，因此必须落在 noise 的最高分与 real 的最低分之间。当前两组区间重叠，无可用取值。",
+  "real": {
+    "GPU 纹理压缩": 0.8376,
+    "同步 fence": 0.787,
+    "周会纪要": 0.6256,
+    "调试笔记": 0.8005
+  },
+  "noise": {
+    "量子纠缠夸克蹦迪": 0.6244,
+    "zzzqqq": 0.7179,
+    "asdfghjkl": 0.6415,
+    "蓝色鲸鱼做梦": 0.6098,
+    "9876543210": 0.7019,
+    "kkkk wwwww": 0.836
+  },
+  "reference": {
+    "ab_q8_0_last_pooling": {
+      "note": "同模型换 Q8_0 + --pooling last（另起一个 :18801 对照端点），同一批块重算。块间余弦均值 0.6907 → 0.3884（塌缩改善 44%），噪声最高分上限 0.851 → 0.685。但仍与真实最低分重叠，单一阈值依旧不可用。",
+      "block_collapse_mean": 0.3884,
+      "real_top_range": [
+        0.5,
+        0.86
+      ],
+      "noise_top_range": [
+        0.312,
+        0.685
+      ]
+    }
+  }
+}
